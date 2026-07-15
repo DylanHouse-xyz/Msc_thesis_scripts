@@ -1,0 +1,110 @@
+configfile: "config/samples.yaml"
+
+wildcard_constraints:
+    num = r"\d+"
+
+rule all:
+    input:
+        expand("resources/bams/{sample}.bam", sample = config["reads"]),
+        expand("resources/bams/{sample}.bam.bai", sample = config["reads"])
+
+rule fastqc:
+    input:
+        files = lambda wildcards: config["reads"][wildcards.sample][0][int(wildcards.num) - 1],
+    output:
+        html = "results/fastqc/{read}_r{num}.html",
+        zip = "results/fastqc/{read}_r{num}_fastqc.zip",
+    threads: 1
+    resources:
+        mem_mb = 2024,
+    message:
+        "Running fastqc to check quality of sequence and generate a report"
+    conda:
+        "envs/alignment.yaml"
+    wrapper:
+        "v7.6.0/bio/fastqc"
+
+rule bwa_mem2:
+    input:
+        reads = lambda wildcards: config["reads"][wildcards.sample][0],
+        idx = multiext("resources/genome/idx/hs38DH", ".0123", ".amb", ".ann", ".bwt.2bit.64", ".pac")
+    output:
+        mapped = temp("resources/bams/{sample}.bam"),
+    params:
+        extra=r"-R '@RG\tID:{sample}\tSM:{sample}'",
+        sort='samtools',
+        sort_order="coordinate"
+    threads: 32,
+    conda:
+        "envs/alignment.yaml"
+    log:
+        "logs/bwa/{sample}.txt"
+    benchmark:
+        "benchmark/bwa/bwa_mem2.txt"
+    message:
+        "alignment with bwa-mem2"
+    wrapper:
+        "v9.4.1/bio/bwa-mem2/mem"
+
+rule samtools_collate:
+    input:
+        mapped = rules.bwa_mem2.output.mapped
+    output:
+        collate = temp("resources/bams/{sample}.collated.bam")
+    log:
+        "logs/samtools_collate/{sample}.txt"
+    params:
+        extra = "-f"
+    conda:
+        "envs.alignment.yaml"
+    threads: 32
+    wrapper:
+        "v8.1.1/bio/samtools/collate"
+
+rule samtools_fixmate:
+    input:
+        collate = rules.samtools_collate.output.collate
+    output:
+        fixmate = temp("resources/bams/{sample}_fix.bam")
+    message:
+        "Fixing mate information"
+    threads: 32
+    params:
+        extra="-m",
+    conda:
+        "envs/alignment.yaml"
+    wrapper:
+        "v8.1.1/bio/samtools/fixmate/"
+
+rule samtools_sort:
+    input:
+        fixmate = rules.samtools_fixmate.output.fixmate,
+    output:
+        sort = temp("resources/bams/{sample}.sorted.bam")
+    params:
+        extra="=m 4G"
+    threads: 32
+    wrapper:
+        "v8.1.1/bio/samtools/sort"
+
+rule samtools_markdup:
+    input:
+        aln = rules.samtools_sort.output.sort
+    output:
+        bam = "resources/bams/{sample}.bam"
+    threads: 32
+    conda:
+        "envs/alignment.yaml"
+    message:
+        "Marking PCR duplicates prior to analysis"
+    wrapper:
+        "v9.4.1/bio/samtools/markdup"
+
+rule samtools_index:
+    input:
+        rules.samtools_markdup.output.bam
+    output:
+        "resources/bams/{sample}.bam.bai"
+    threads: 4
+    wrapper:
+        "v3.4.0/bio/samtools/index"

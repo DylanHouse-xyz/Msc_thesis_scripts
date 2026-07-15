@@ -1,0 +1,4 @@
+
+reads:
+   sample_name:
+   - [/path/to/read1, /path/to/read2]
